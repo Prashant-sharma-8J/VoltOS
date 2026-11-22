@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#142923">
+  <title>VoltOS · EV charging simulator</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="top">
+      <a class="brand" href="#overview" aria-label="VoltOS overview">
+        <span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>VoltOS<small>EV charging simulator</small></span>
+      </a>
+      <nav aria-label="Dashboard views">
+        <a href="#overview" aria-current="page">Overview</a>
+        <a href="#sessions">Sessions</a>
+      </nav>
+      <span class="connection" id="connection" role="status"><i></i> Connecting</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="page-intro">
+      <div><p class="eyebrow">OPERATING SYSTEMS LAB</p><h1 id="page-title">Station overview</h1></div>
+      <div class="page-actions" id="overview-actions">
+        <button type="button" class="button secondary" id="demo">Load demo traffic</button>
+        <button type="button" class="button primary" id="open-arrival">Add vehicle</button>
+      </div>
+    </div>
+    <p class="notice" id="notice" role="status" hidden></p>
+    <section id="overview" class="view" aria-labelledby="page-title">
+      <div class="metrics" aria-label="Station metrics">
+        <div><span>Power draw</span><strong id="metric-power">—</strong><small id="metric-cap">Effective limit</small></div>
+        <div><span>Chargers in use</span><strong id="metric-chargers">—</strong><small id="metric-health">Charger availability</small></div>
+        <div><span>Waiting vehicles</span><strong id="metric-queue">—</strong><small id="metric-next">Priority queue</small></div>
+        <div><span>Completed sessions</span><strong id="metric-completed">—</strong><small id="metric-energy">Billed energy</small></div>
+      </div>
+      <div class="overview-grid">
+        <div class="stack">
+          <section class="panel power-panel" aria-labelledby="power-title">
+            <div class="section-head">
+              <div><h2 id="power-title">Station power</h2><p>Allocated load and effective capacity</p></div>
+              <button type="button" class="button ghost" id="open-power">Power settings</button>
+            </div>
+            <div class="graph">
+              <canvas id="power-chart" aria-label="Power draw and effective capacity over a rolling window of up to 60 seconds" role="img"></canvas>
+            </div>
+            <div class="chart-foot">
+              <span class="key"><i></i> Load <i></i> Limit</span>
+              <span id="power-mode">Waiting for station</span>
+            </div>
+          </section>
+          <section class="panel" aria-labelledby="chargers-title">
+            <div class="section-head white-head"><div><h2 id="chargers-title">Charger roster</h2><p>Inspect power share and test failover.</p></div></div>
+            <div class="table-scroll">
+              <table class="chargers"><thead><tr><th>Charger</th><th>Vehicle / Energy</th><th>Power</th><th>Action</th></tr></thead><tbody id="charger-rows"></tbody></table>
+            </div>
+          </section>
+        </div>
+        <div class="stack">
+          <section class="panel" aria-labelledby="queue-title">
+            <div class="section-head white-head">
+              <div><h2 id="queue-title">Priority queue</h2><p>Service order and estimated wait</p></div>
+              <span class="count" id="queue-count">—</span>
+            </div>
+            <div class="table-scroll">
+              <table class="queue"><thead><tr><th>Vehicle</th><th>Priority</th><th>Wait</th></tr></thead><tbody id="queue-rows"></tbody></table>
+            </div>
+            <div class="panel-foot">Wait is shown in simulated minutes.</div>
+          </section>
+          <section class="panel" aria-labelledby="events-title">
+            <div class="section-head white-head">
+              <div><h2 id="events-title">Station activity</h2><p>Dispatch, faults and recovery</p></div>
+            </div>
+            <ol id="events" class="events"></ol>
+          </section>
+        </div>
+      </div>
+      <details class="panel concepts" id="os-concepts">
+        <summary>Operating-system concepts</summary>
+      <dl>
+        <dt>POSIX threads</dt><dd>One dispatcher consumes arrivals. Every active assignment gets a charging worker.</dd>
+        <dt>Mutex and counting semaphore</dt><dd>A mutex protects station state. The semaphore counts healthy, unused chargers.</dd>
+        <dt>Priority scheduling</dt><dd>Emergency, low battery (SOC ≤20%), premium or fleet, reserved, then normal. Requests in a class retain arrival order.</dd>
+        <dt>Resource management</dt><dd>Power is shared equally, with a 22 kW charger ceiling. A new assignment requires at least 3 kW per active slot.</dd>
+        <dt>Interprocess communication</dt><dd>The local HTTP gateway exchanges commands and snapshots with the C++ engine through pipes.</dd>
+      </dl>
+      </details>
+    </section>
+    <section id="sessions" class="view" aria-labelledby="page-title" hidden>
+      <div class="metrics">
+        <div><span>Completed sessions</span><strong id="report-completed">—</strong><small>Current run</small></div>
+        <div><span>Billed energy</span><strong id="report-energy">—</strong><small>Completed sessions</small></div>
+        <div><span>Total billed</span><strong id="report-revenue">—</strong><small>Energy + charging time</small></div>
+        <div><span>Avg. turnaround</span><strong id="report-elapsed">—</strong><small>Arrival to completion</small></div>
+      </div>
+      <section class="panel" aria-labelledby="receipts-title">
+        <div class="section-head white-head"><div><h2 id="receipts-title">Recent receipts</h2><p>₹12 per kWh + ₹0.50 per simulated charging minute</p></div></div>
+        <div class="table-scroll"><table><thead><tr><th>Request</th><th>Vehicle</th><th>Energy</th><th>Charging time</th><th>Interruptions</th><th>Total</th></tr></thead><tbody id="receipt-rows"></tbody></table></div>
+        <div class="exports"><a href="/logs/sessions.csv">Sessions CSV</a><a href="/logs/faults.csv">Faults CSV</a><a href="/logs/transactions.csv">Transactions CSV</a></div>
+      </section>
+    </section>
+    <footer><span>Operating System Lab · 24B15CS312</span><span id="sim-clock">Simulation clock</span></footer>
+  </main>
+
+  <dialog id="arrival-dialog" aria-labelledby="arrival-title">
+    <form id="arrival-form">
+      <div class="dialog-head"><div><p class="eyebrow">PRIORITY SCHEDULER</p><h2 id="arrival-title">Add vehicle</h2></div><button type="button" class="close" data-close aria-label="Close vehicle form">×</button></div>
+      <div class="form-grid">
+        <label>Vehicle ID<input name="plate" placeholder="EV-1842" maxlength="18" pattern="[A-Za-z0-9][A-Za-z0-9\-]{0,17}" required></label>
+        <label>Battery SOC (%)<input name="soc" type="number" value="45" min="0" max="99" step="1" required></label>
+        <label>Service<select name="service"><option value="normal">Normal</option><option value="reserved">Reserved</option><option value="premium">Premium</option><option value="fleet">Fleet</option><option value="emergency">Emergency</option></select></label>
+        <label>Energy requested (kWh)<input name="kwh" type="number" value="12" min="0.1" max="100" step="any" required></label>
+      </div>
+      <p class="field-note">Battery SOC of 20% or less qualifies for low-battery priority. Emergency requests dispatch first.</p>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button type="button" class="button secondary" data-close>Cancel</button><button class="button primary">Queue vehicle</button></div>
+    </form>
+  </dialog>
+  <dialog id="power-dialog" aria-labelledby="settings-title">
+    <form id="power-form">
+      <div class="dialog-head"><div><p class="eyebrow">DYNAMIC LOAD MANAGEMENT</p><h2 id="settings-title">Power settings</h2></div><button type="button" class="close" data-close aria-label="Close power settings">×</button></div>
+      <div class="form-grid">
+        <label>Grid capacity (kW)<input name="capacity" type="number" min="5" max="500" step="any" required></label>
+        <label>Peak mode<select name="mode"><option value="off">Off</option><option value="on">On</option><option value="auto">Scheduled</option></select></label>
+      </div>
+      <p class="field-note">Peak mode sets the effective limit to 60% of capacity. Scheduled mode uses 18:00–22:00 in the station’s local time.</p>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button type="button" class="button secondary" data-close>Cancel</button><button class="button primary">Apply settings</button></div>
+    </form>
+  </dialog>
+</body>
+</html>
