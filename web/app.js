@@ -8,7 +8,7 @@ const safe = (value) => String(value).replace(/[&<>"']/g, (character) => (
 const empty = (columns, message) => `<tr><td colspan="${columns}" class="empty-cell">${message}</td></tr>`;
 const money = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" });
 const time = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-const views = { overview: "Station overview", sessions: "Session history" };
+const views = { overview: "Station overview", sessions: "Session history", activity: "Station activity", concepts: "OS Concepts" };
 const ui = { snapshot: null, history: [], timer: null, actionsInFlight: 0, statusRevision: 0 };
 
 function route() {
@@ -59,8 +59,12 @@ function renderDemoButton() {
   const demo = byId("demo");
   const data = ui.snapshot;
   const occupied = data && (data.queue.length > 0 || data.chargers.some((c) => c.vehicle));
-  demo.disabled = !data || occupied || ui.actionsInFlight > 0;
-  demo.title = occupied ? "Demo traffic can be loaded when the station is empty." : "Queue nine example vehicles.";
+  const running = Boolean(data?.demoActive);
+  demo.textContent = running ? "Stop demo" : "Load demo traffic";
+  demo.disabled = !data || data.demoStopping || (!running && occupied) || ui.actionsInFlight > 0;
+  demo.title = running ? "End demo traffic and restore the manual clock."
+    : occupied ? "Demo traffic can be loaded when the station is empty." : "Queue nine example vehicles at 10×.";
+  byId("open-arrival").disabled = running;
 }
 
 function render(data) {
@@ -77,7 +81,14 @@ function render(data) {
   byId("queue-count").textContent = data.queue.length;
 
   byId("power-mode").textContent = data.peak ? "Peak throttling active" : data.peakMode === "auto" ? "Peak mode scheduled" : "Peak throttling off";
-  byId("sim-clock").textContent = `Simulation clock ×${data.speed}`;
+  byId("sim-clock").textContent = `${data.demoActive ? "Demo" : "Simulation"} clock ×${data.speed}`;
+  const threshold = data.agingMinutes;
+  byId("queue-policy").textContent = data.demoActive
+    ? `Demo requests age up after ${threshold} simulated minutes. Wait estimates use the current queue order.`
+    : "Medic first, then low battery (20% or below), then Normal. Each group uses arrival order.";
+  if (Number.isFinite(threshold)) {
+    byId("aging-explanation").textContent = `During the 10× demo, Normal requests join the low-battery group after ${threshold} simulated minutes in the queue. Waiting time carries over after interruptions.`;
+  }
   renderDemoButton();
 
   const rows = byId("charger-rows");
@@ -95,12 +106,13 @@ function render(data) {
   }).join("");
   if (focused) rows.querySelector(`[data-charger="${focused}"]`)?.focus({ preventScroll: true });
 
-  byId("queue-rows").innerHTML = data.queue.length ? data.queue.map((vehicle) => (
-    `<tr><td><strong class="mono">${safe(vehicle.plate)}</strong><span class="detail">${vehicle.soc}% SOC${vehicle.interruptions ? " · requeued" : ""}</span></td>
-     <td><span class="priority" data-rank="${vehicle.rank}">${safe(vehicle.priority)}</span></td>
-     <td class="mono">${vehicle.eta === null ? "—" : vehicle.eta < 0.05 ? "&lt;0.1 min" : `${units(vehicle.eta)} min`}</td></tr>`
-  )).join("") : empty(3, "No vehicles are waiting.");
-  byId("events").innerHTML = data.events.slice(0, 9).map((event) => {
+  byId("queue-rows").innerHTML = data.queue.length ? data.queue.map((vehicle) => {
+    const aging = data.demoActive && Number.isFinite(vehicle.promotionIn) ? `Ages in ${Math.ceil(vehicle.promotionIn)} sim min` : "";
+    return `<tr><td><strong class="mono">${safe(vehicle.plate)}</strong><span class="detail">${vehicle.soc}% SOC${vehicle.interruptions ? " · requeued" : ""}</span></td>
+     <td><span class="priority" data-rank="${vehicle.rank}">${safe(vehicle.aged ? "Aged priority" : vehicle.priority)}</span>${aging ? `<span class="detail">${aging}</span>` : ""}</td>
+     <td class="mono">${vehicle.eta === null ? "—" : vehicle.eta < 0.05 ? "&lt;0.1 min" : `${units(vehicle.eta)} min`}</td></tr>`;
+  }).join("") : empty(3, "No vehicles are waiting.");
+  byId("events").innerHTML = data.events.map((event) => {
     const timestamp = new Date(event.time * 1000);
     return `<li data-type="${safe(event.type)}"><time datetime="${timestamp.toISOString()}">${time.format(timestamp)}</time><span>${safe(event.message)}</span></li>`;
   }).join("");
@@ -257,7 +269,11 @@ byId("open-power").addEventListener("click", () => {
 document.querySelectorAll("[data-close]").forEach((button) => {
   button.addEventListener("click", () => button.closest("dialog").close());
 });
-byId("demo").addEventListener("click", (event) => action({ action: "demo" }, "Nine demo requests queued.", event.currentTarget));
+byId("demo").addEventListener("click", (event) => {
+  const stopping = ui.snapshot?.demoActive;
+  action({ action: stopping ? "stop-demo" : "demo" },
+    stopping ? "Returning to manual traffic." : "Demo traffic started at 10× with priority aging.", event.currentTarget);
+});
 byId("charger-rows").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-charger]");
   if (!button) return;

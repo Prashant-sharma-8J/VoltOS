@@ -15,8 +15,9 @@ void help() {
     std::cout << "status                         Display the current snapshot\n"
               << "watch [seconds]                Refresh the console once a second (default 10)\n"
               << "add PLATE SOC SERVICE KWH      Queue a vehicle\n"
-              << "  SERVICE: normal | reserved | premium | fleet | emergency\n"
-              << "demo                           Queue nine example vehicles at an empty station\n"
+              << "  SERVICE: normal | medic\n"
+              << "demo                           Start 10x demo traffic with priority aging\n"
+              << "stop-demo                      End demo traffic and restore the manual clock\n"
               << "cap KW                         Change grid capacity (5–500 kW)\n"
               << "peak on|off|auto               Use 60% capacity during peak mode\n"
               << "fault CHARGER                  Simulate a fault and automatic recovery\n"
@@ -50,12 +51,13 @@ int main(int argc, char* argv[]) {
                 config.chargers = static_cast<int>(count);
             } else if (arg == "--capacity") config.capacity = number(value(), 5, 500);
             else if (arg == "--speed") config.speed = number(value(), 1, 600);
+            else if (arg == "--aging-minutes") config.agingMinutes = number(value(), 1, 240);
             else if (arg == "--logs") config.logRoot = value();
             else if (arg == "--auto-peak") config.autoPeak = true;
             else if (arg == "--json") json = true;
             else if (arg == "--help") {
                 std::cout << "voltos [--chargers 1–16] [--capacity 5–500]"
-                             " [--speed 1–600] [--logs directory] [--auto-peak] [--json]\n\n";
+                             " [--speed 1–600] [--aging-minutes 1–240] [--logs directory] [--auto-peak] [--json]\n\n";
                 help();
                 return 0;
             } else throw std::invalid_argument("Unknown option: " + arg);

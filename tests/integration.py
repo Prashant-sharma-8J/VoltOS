@@ -69,10 +69,12 @@ def engine_checks(directory):
             eventually(lambda: active().get("FIRST"))
             for line in ("add NORMAL 60 normal 0.3", "add BOOKED 30 reserved 0.3",
                          "add FLEET 45 fleet 0.3", "add LOW-A 18 normal 0.3",
-                         "add LOW-B 20 premium 0.3", "add MEDIC 1 emergency 0.3"):
+                         "add LOW-B 20 premium 0.3", "add MEDIC 1 medic 0.3"):
                 ok(line)
             queue = status()["queue"]
-            assert [v["plate"] for v in queue] == ["MEDIC", "LOW-A", "LOW-B", "FLEET", "BOOKED", "NORMAL"]
+            assert [v["plate"] for v in queue] == ["MEDIC", "LOW-A", "LOW-B", "NORMAL", "BOOKED", "FLEET"]
+            assert [v["priority"] for v in queue] == ["Medic", "Low battery", "Low battery",
+                                                       "Normal", "Normal", "Normal"]
             assert all(a["eta"] <= b["eta"] for a, b in zip(queue, queue[1:]))
             assert not command("add FIRST 12 emergency 1")["ok"]
             assert not command("add BAD 100 normal 1")["ok"]
@@ -120,9 +122,76 @@ def engine_checks(directory):
     print("PASS · native queue order, power cap, failover, auto-repair, billing and shutdown")
 
 
+def aging_checks(directory):
+    with subprocess.Popen([str(BINARY), "--json", "--chargers", "4",
+                           "--speed", "120", "--aging-minutes", "1", "--logs", directory],
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, encoding="utf-8") as process:
+        def command(line, ok=True):
+            print(line, file=process.stdin, flush=True)
+            response = json.loads(process.stdout.readline())
+            assert response["ok"] == ok, response
+            return response
+
+        def status():
+            return power_invariants(command("status"))
+
+        try:
+            startup = process.stderr.readline()
+            assert startup.startswith("Logs: ")
+            log = Path(startup.strip().removeprefix("Logs: "))
+            command("cap 5")
+            command("add BLOCKER 50 normal 0.3")
+            eventually(lambda: status()["chargers"][0]["vehicle"])
+            command("add MANUAL 50 normal 0.1")
+            command("demo", ok=False)
+
+            # A minute at the manual clock takes 0.5 seconds. The waiting
+            # request must keep its Normal priority after that time has passed.
+            time.sleep(0.75)
+            state = status()
+            manual = state["queue"][0]
+            assert state["speed"] == 120 and not state["demoActive"]
+            assert manual["plate"] == "MANUAL" and manual["priority"] == "Normal"
+            assert "promotionIn" not in manual and not manual["aged"]
+            eventually(lambda: status()["completed"] == 2)
+
+            command("cap 48")
+            command("demo")
+            state = eventually(lambda: (s if len((s := status())["queue"]) == 5 else None))
+            original = [c["vehicle"]["plate"] for c in state["chargers"]]
+            assert state["demoActive"] and state["speed"] == 10 and state["agingMinutes"] == 1
+            assert original == ["MEDIC-12", "EV-0618", "EV-0521", "EV-7182"]
+            assert state["queue"][0]["plate"] == "EV-9354"
+            assert 0 < state["queue"][-1]["promotionIn"] <= 1
+            command("add BLOCKED 50 normal 3", ok=False)
+
+            aged = eventually(lambda: (s if (s := status())["queue"][0]["aged"] else None), timeout=10)
+            assert [v["plate"] for v in aged["queue"]] == [
+                "EV-1842", "EV-3920", "EV-1407", "EV-2056", "EV-9354"]
+            assert aged["queue"][0]["rank"] == aged["queue"][-1]["rank"]
+            assert [c["vehicle"]["plate"] for c in aged["chargers"]] == original
+            assert sum(e["type"] == "aging" for e in aged["events"]) == 4
+
+            command("stop-demo")
+            stopped = eventually(lambda: (s if not (s := status())["demoActive"] else None))
+            assert stopped["speed"] == 120 and not stopped["queue"]
+            assert stopped["completed"] == 2
+            assert all(c["vehicle"] is None for c in stopped["chargers"])
+            assert sum(row["status"] == "aborted" for row in rows(log / "sessions.csv")) == 9
+            command("add MANUAL-AGAIN 50 normal 1")
+            command("quit")
+            assert process.wait(timeout=3) == 0
+        finally:
+            if process.poll() is None:
+                process.stdin.close()
+                process.wait(timeout=4)
+    print("PASS · demo-only aging and 10× clock, non-preemption, stop and manual restore")
+
+
 def http_checks(directory):
     with subprocess.Popen(["python3", str(ROOT / "web/server.py"), "--port", "0",
-                           "--speed", "1", "--logs", directory],
+                           "--logs", directory],
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
         try:
             startup = process.stdout.readline().strip()
@@ -142,7 +211,8 @@ def http_checks(directory):
             with urlopen(address, timeout=4) as page:
                 assert b"Station overview" in page.read()
             assert api({"action": "settings", "capacity": 30, "mode": "on"})["ok"]
-            assert api()["limit"] == 18
+            settings = api()
+            assert settings["limit"] == 18 and settings["speed"] == 10 and settings["agingMinutes"] == 30
             with ThreadPoolExecutor(max_workers=6) as pool:
                 actions = ({"action": "add", "plate": f"EV-{i}", "soc": 40,
                             "service": "normal", "kwh": 1} for i in range(12))
@@ -150,6 +220,13 @@ def http_checks(directory):
             assert len({r["id"] for r in results if r["ok"]}) == 12
             state = power_invariants(api())
             assert sum(c["vehicle"] is not None for c in state["chargers"]) + len(state["queue"]) == 12
+            assert api({"action": "add", "plate": "MEDIC-01", "soc": 2,
+                        "service": "medic", "kwh": 1})["ok"]
+            assert api({"action": "add", "plate": "MEDIC-FORM", "soc": 23,
+                        "service": "emergency", "kwh": 18})["ok"]
+            medic_queue = api()["queue"][:2]
+            assert [(vehicle["plate"], vehicle["priority"]) for vehicle in medic_queue] == [
+                ("MEDIC-01", "Medic"), ("MEDIC-FORM", "Medic")]
             try:
                 api({"action": "add", "plate": "EV-1\nfault 2", "soc": 40, "service": "normal", "kwh": 1})
             except HTTPError as error:
@@ -169,4 +246,5 @@ def http_checks(directory):
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="voltos-") as directory:
         engine_checks(directory)
+        aging_checks(directory)
         http_checks(directory)

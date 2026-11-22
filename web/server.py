@@ -19,8 +19,11 @@ LOGS = {"sessions.csv", "faults.csv", "transactions.csv"}
 class Engine:
     def __init__(self, args):
         command = [str(ROOT / "build/voltos"), "--json", "--chargers", str(args.chargers),
-                   "--capacity", str(args.capacity), "--speed", str(args.speed), "--logs",
-                   str(Path(args.logs).resolve())]
+                   "--capacity", str(args.capacity), "--logs", str(Path(args.logs).resolve())]
+        if args.speed is not None:
+            command.extend(("--speed", str(args.speed)))
+        if args.aging_minutes is not None:
+            command.extend(("--aging-minutes", str(args.aging_minutes)))
         if args.auto_peak:
             command.append("--auto-peak")
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -62,8 +65,8 @@ def native_command(data):
     if not isinstance(data, dict):
         raise ValueError("Expected a JSON object.")
     action = data.get("action")
-    if action == "demo":
-        return "demo"
+    if action in ("demo", "stop-demo"):
+        return action
     if action in ("fault", "repair"):
         charger = data.get("charger")
         if type(charger) is int:
@@ -78,7 +81,7 @@ def native_command(data):
         plate, soc, service, kwh = (data.get(key) for key in ("plate", "soc", "service", "kwh"))
         if (isinstance(plate, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,17}", plate)
                 and type(soc) is int and type(kwh) in (int, float)
-                and service in ("normal", "reserved", "premium", "fleet", "emergency")):
+                and service in ("normal", "medic", "reserved", "premium", "fleet", "emergency")):
             return f"add {plate} {soc} {service} {kwh}"
     raise ValueError("Check the request fields and try again.")
 
@@ -167,7 +170,8 @@ def main():
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--chargers", type=int, default=4)
     parser.add_argument("--capacity", type=float, default=48)
-    parser.add_argument("--speed", type=float, default=120)
+    parser.add_argument("--speed", type=float, help="Override the manual simulator clock rate")
+    parser.add_argument("--aging-minutes", type=float, help="Simulated demo queue minutes before promotion")
     parser.add_argument("--logs", default=str(ROOT / "logs"))
     parser.add_argument("--auto-peak", action="store_true")
     parser.add_argument("--demo", action="store_true")

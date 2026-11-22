@@ -116,7 +116,7 @@ progress::-moz-progress-bar { background: #518366; }
 .priority[data-rank="1"] { color: #795517; }
 .panel-foot { border-top: 1px solid var(--line); color: var(--muted); padding: 11px 20px; font-size: .8rem; }
 .empty-cell { color: var(--muted); padding-top: 22px; padding-bottom: 22px; }
-.events { padding: 5px 20px; margin: 0; list-style: none; max-height: 300px; overflow: auto; }
+.events { padding: 5px 20px; margin: 0; list-style: none; }
 .events li { display: grid; grid-template-columns: 66px minmax(0, 1fr); gap: 10px; padding: 11px 0; border-bottom: 1px solid #e5e8de; font-size: .87rem; }
 .events li:last-child { border-bottom: 0; }
 .events time { font: .76rem var(--mono); color: var(--muted); align-self: center; }
@@ -124,9 +124,7 @@ progress::-moz-progress-bar { background: #518366; }
 .events [data-type="recovery"] { color: #315d42; }
 .exports { padding: 14px 20px; border-top: 1px solid var(--line); display: flex; gap: 16px; flex-wrap: wrap; font-size: .9rem; }
 .exports a { text-underline-offset: 4px; }
-.concepts { margin-top: 19px; }
-.concepts summary { cursor: pointer; padding: 17px 20px; font: 700 1.08rem var(--heading); }
-.concepts dl { border-top: 1px solid var(--line); margin: 0; padding: 4px 20px 20px; }
+.concepts dl { margin: 0; padding: 7px 20px 20px; }
 .concepts dt { font-weight: 700; margin-top: 12px; }
 .concepts dd { margin: 3px 0 0; color: var(--muted); line-height: 1.55; }
 footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; border-top: 1px solid #d0d8cb; color: var(--muted); padding: 16px 0; margin-top: 27px; font: .76rem var(--mono); }
@@ -153,7 +151,7 @@ select { appearance: none; padding-right: 26px; background: white url("data:imag
 }
 @media (max-width: 760px) {
   .top { flex-wrap: wrap; min-height: 0; gap: 0; padding-top: 13px; }
-  nav { order: 3; width: 100%; height: 43px; gap: 25px; margin-top: 5px; }
+  nav { order: 3; width: 100%; height: 43px; gap: clamp(10px, 3vw, 25px); margin-top: 5px; }
   main { padding-top: 28px; }
   .page-intro { align-items: start; flex-direction: column; margin-bottom: 17px; }
   .overview-grid { grid-template-columns: minmax(0, 1fr); }

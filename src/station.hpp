@@ -16,7 +16,8 @@ public:
     struct Config {
         int chargers = 4;
         double capacity = 48;
-        double speed = 120;
+        double speed = 10;
+        double agingMinutes = 30;
         bool autoPeak = false;
         std::filesystem::path logRoot = "logs";
     };
@@ -42,7 +43,9 @@ private:
         double delivered = 0;
         double chargeHours = 0;
         int interruptions = 0;
-        Time arrived, updated;
+        Time arrived, updated, queuedSince;
+        Clock::duration queuedTime{};
+        bool aged = false;
     };
 
     struct Charger {
@@ -81,6 +84,12 @@ private:
     bool dispatch(Time now);
     void updateEnergy(Time now);
     void updateEnergy(Charger&, Time now);
+    void queueVehicle(const std::shared_ptr<Vehicle>&, Time now);
+    Time promotionAt(const Vehicle&) const;
+    void promoteWaiting(Time now);
+    void abortQueued();
+    void finishDemoIfIdle();
+    double clockSpeed() const;
     void rebalance();
     void markFault(Charger&, Time now);
     void repair(Charger&);
@@ -105,6 +114,7 @@ private:
     std::vector<Charger> chargers_;
     std::priority_queue<std::shared_ptr<Vehicle>,
         std::vector<std::shared_ptr<Vehicle>>, ByPriority> queue_;
+    Time nextPromotion_ = Time::max();
     std::deque<Event> events_;
     std::deque<Receipt> receipts_;
     std::filesystem::path logDirectory_;
@@ -112,6 +122,7 @@ private:
     std::string logError_;
     Time started_ = Clock::now();
     bool stopping_ = false, peak_ = false, autoPeak_ = false;
+    bool demoActive_ = false, demoStopping_ = false;
     int nextId_ = 1, workers_ = 0, completed_ = 0, faultCount_ = 0;
     double completedEnergy_ = 0, revenue_ = 0, totalElapsedMinutes_ = 0;
 };

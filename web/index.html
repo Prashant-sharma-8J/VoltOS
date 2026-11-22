@@ -13,11 +13,13 @@
     <div class="top">
       <a class="brand" href="#overview" aria-label="VoltOS overview">
         <span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>
-        <span>VoltOS<small>EV charging simulator</small></span>
+        <span>VoltOS<small>EV charging</small></span>
       </a>
       <nav aria-label="Dashboard views">
         <a href="#overview" aria-current="page">Overview</a>
         <a href="#sessions">Sessions</a>
+        <a href="#activity">Activity</a>
+        <a href="#concepts">OS Concepts</a>
       </nav>
       <span class="connection" id="connection" role="status"><i></i> Connecting</span>
     </div>
@@ -25,7 +27,7 @@
 
   <main>
     <div class="page-intro">
-      <div><p class="eyebrow">OPERATING SYSTEMS LAB</p><h1 id="page-title">Station overview</h1></div>
+      <h1 id="page-title">Station overview</h1>
       <div class="page-actions" id="overview-actions">
         <button type="button" class="button secondary" id="demo">Load demo traffic</button>
         <button type="button" class="button primary" id="open-arrival">Add vehicle</button>
@@ -68,28 +70,12 @@
               <span class="count" id="queue-count">—</span>
             </div>
             <div class="table-scroll">
-              <table class="queue"><thead><tr><th>Vehicle</th><th>Priority</th><th>Wait</th></tr></thead><tbody id="queue-rows"></tbody></table>
+              <table class="queue"><thead><tr><th>Vehicle</th><th>Priority</th><th>Wait (sim min)</th></tr></thead><tbody id="queue-rows"></tbody></table>
             </div>
-            <div class="panel-foot">Wait is shown in simulated minutes.</div>
-          </section>
-          <section class="panel" aria-labelledby="events-title">
-            <div class="section-head white-head">
-              <div><h2 id="events-title">Station activity</h2><p>Dispatch, faults and recovery</p></div>
-            </div>
-            <ol id="events" class="events"></ol>
+            <div class="panel-foot" id="queue-policy">Wait estimates use the current queue order.</div>
           </section>
         </div>
       </div>
-      <details class="panel concepts" id="os-concepts">
-        <summary>Operating-system concepts</summary>
-      <dl>
-        <dt>POSIX threads</dt><dd>One dispatcher consumes arrivals. Every active assignment gets a charging worker.</dd>
-        <dt>Mutex and counting semaphore</dt><dd>A mutex protects station state. The semaphore counts healthy, unused chargers.</dd>
-        <dt>Priority scheduling</dt><dd>Emergency, low battery (SOC ≤20%), premium or fleet, reserved, then normal. Requests in a class retain arrival order.</dd>
-        <dt>Resource management</dt><dd>Power is shared equally, with a 22 kW charger ceiling. A new assignment requires at least 3 kW per active slot.</dd>
-        <dt>Interprocess communication</dt><dd>The local HTTP gateway exchanges commands and snapshots with the C++ engine through pipes.</dd>
-      </dl>
-      </details>
     </section>
     <section id="sessions" class="view" aria-labelledby="page-title" hidden>
       <div class="metrics">
@@ -104,7 +90,29 @@
         <div class="exports"><a href="/logs/sessions.csv">Sessions CSV</a><a href="/logs/faults.csv">Faults CSV</a><a href="/logs/transactions.csv">Transactions CSV</a></div>
       </section>
     </section>
-    <footer><span>Operating System Lab · 24B15CS312</span><span id="sim-clock">Simulation clock</span></footer>
+    <section id="activity" class="view" aria-labelledby="page-title" hidden>
+      <div class="panel">
+        <div class="section-head white-head"><p>Recent dispatch, fault, and recovery events</p></div>
+        <ol id="events" class="events"></ol>
+      </div>
+    </section>
+    <section id="concepts" class="view" aria-labelledby="page-title" hidden>
+      <div class="panel concepts">
+        <dl>
+          <dt>POSIX threads</dt><dd>One dispatcher consumes arrivals. Every active assignment gets a charging worker.</dd>
+          <dt>Mutex and counting semaphore</dt><dd>A mutex protects station state. The semaphore counts healthy, unused chargers.</dd>
+          <dt>Non-preemptive priority scheduling</dt><dd>Medic gets the next available charger, followed by low-battery vehicles (SOC ≤20%), then other vehicles. Aged requests share low-battery priority during the demo. Each group uses original arrival order. Active charging continues when a higher-priority request arrives.</dd>
+          <dt>Priority aging</dt><dd id="aging-explanation">During the 10× demo, Normal requests move into the low-battery group after enough time in the queue. Waiting time carries over after interruptions.</dd>
+          <dt>Resource management</dt><dd>Power is shared equally, with a 22 kW charger ceiling. A new assignment requires at least 3 kW per active slot.</dd>
+          <dt>Interprocess communication</dt><dd>The local HTTP gateway exchanges commands and snapshots with the C++ engine through pipes.</dd>
+          <dt>Producer–consumer and condition variables</dt><dd>Vehicle arrivals add requests to the queue. A condition variable wakes the dispatcher and charging workers when station state changes.</dd>
+          <dt>Deadlock avoidance</dt><dd>The dispatcher checks the power budget and tries to acquire a charger token under the same mutex. It releases the mutex while waiting for another state change.</dd>
+          <dt>Fault recovery</dt><dd>An interrupted request returns to the queue with its delivered energy. The offline charger returns to service after 12 real seconds or when restored manually.</dd>
+          <dt>File I/O</dt><dd>The engine writes session, fault, and transaction records to CSV. Download the logs from Sessions to trace a run.</dd>
+        </dl>
+      </div>
+    </section>
+    <footer><span id="sim-clock">Simulation clock</span></footer>
   </main>
 
   <dialog id="arrival-dialog" aria-labelledby="arrival-title">
@@ -113,10 +121,11 @@
       <div class="form-grid">
         <label>Vehicle ID<input name="plate" placeholder="EV-1842" maxlength="18" pattern="[A-Za-z0-9][A-Za-z0-9\-]{0,17}" required></label>
         <label>Battery SOC (%)<input name="soc" type="number" value="45" min="0" max="99" step="1" required></label>
-        <label>Service<select name="service"><option value="normal">Normal</option><option value="reserved">Reserved</option><option value="premium">Premium</option><option value="fleet">Fleet</option><option value="emergency">Emergency</option></select></label>
+        <!-- Use the established request value so the form works with already-running gateways. -->
+        <label>Service<select name="service"><option value="normal">Normal</option><option value="emergency">Medic</option></select></label>
         <label>Energy requested (kWh)<input name="kwh" type="number" value="12" min="0.1" max="100" step="any" required></label>
       </div>
-      <p class="field-note">Battery SOC of 20% or less qualifies for low-battery priority. Emergency requests dispatch first.</p>
+      <p class="field-note">Select Medic for an approved medic vehicle. Other vehicles at 20% battery or below automatically receive low-battery priority.</p>
       <p class="form-error" role="alert" hidden></p>
       <div class="dialog-actions"><button type="button" class="button secondary" data-close>Cancel</button><button class="button primary">Queue vehicle</button></div>
     </form>

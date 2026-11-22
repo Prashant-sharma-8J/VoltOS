@@ -16,13 +16,15 @@
 
 namespace {
 constexpr double chargerMax = 22;
+constexpr double demoSpeed = 10;
 constexpr double minimumStartPower = 3;
 constexpr double peakFactor = 0.6;
 constexpr double energyRate = 12;
 constexpr double minuteRate = 0.5;
 constexpr int maxQueue = 150;
 constexpr auto repairDelay = std::chrono::seconds(12);
-constexpr const char* priorities[] = {"Emergency", "Low battery", "Premium / Fleet", "Reserved", "Normal"};
+enum Priority { medicPriority, lowBatteryPriority, normalPriority };
+constexpr const char* priorities[] = {"Medic", "Low battery", "Normal"};
 
 struct Lock {
     pthread_mutex_t& mutex;
@@ -162,10 +164,7 @@ Station::~Station() {
     {
         Lock lock(mutex_);
         while (workers_ > 0) pthread_cond_wait(&changed_, &mutex_);
-        while (!queue_.empty()) {
-            shutdownRecord(*queue_.top());
-            queue_.pop();
-        }
+        abortQueued();
     }
     pthread_cond_destroy(&changed_);
     pthread_mutex_destroy(&mutex_);
@@ -217,6 +216,7 @@ void Station::schedule() {
 }
 
 bool Station::dispatch(Time now) {
+    promoteWaiting(now);
     if (queue_.empty()) return false;
     // Let interrupted workers requeue before admitting a lower-priority request.
     if (std::any_of(chargers_.begin(), chargers_.end(), [](const Charger& charger) {
@@ -242,6 +242,7 @@ bool Station::dispatch(Time now) {
     }
     if (pthread_detach(worker) != 0) std::abort();
     ++workers_;
+    slot->vehicle->queuedTime += now - slot->vehicle->queuedSince;
     queue_.pop();
     rebalance();
     event("dispatch", slot->vehicle->plate + " assigned to charger " + std::to_string(slot->id));
@@ -255,7 +256,7 @@ void Station::updateEnergy(Time now) {
 void Station::updateEnergy(Charger& charger, Time now) {
     if (!charger.vehicle) return;
     auto& vehicle = *charger.vehicle;
-    const double hours = std::chrono::duration<double>(now - vehicle.updated).count() * config_.speed / 3600;
+    const double hours = std::chrono::duration<double>(now - vehicle.updated).count() * clockSpeed() / 3600;
     vehicle.updated = now;
     if (charger.kw <= 0) return;
     const double energy = std::min(vehicle.target - vehicle.delivered, charger.kw * hours);
@@ -269,7 +270,7 @@ void Station::charge(Charger& charger) {
     while (true) {
         const auto now = Clock::now();
         updateEnergy(charger, now);
-        if (stopping_) {
+        if (stopping_ || demoStopping_) {
             shutdownRecord(*vehicle);
             break;
         }
@@ -279,7 +280,7 @@ void Station::charge(Charger& charger) {
         }
         if (charger.faulted) {
             ++vehicle->interruptions;
-            queue_.push(vehicle);
+            queueVehicle(vehicle, now);
             event("requeue", vehicle->plate + " requeued with its delivered energy");
             break;
         }
@@ -290,6 +291,7 @@ void Station::charge(Charger& charger) {
     charger.kw = 0;
     if (!charger.faulted) returnSlot(slots_);
     --workers_;
+    finishDemoIfIdle();
     rebalance();
     pthread_cond_broadcast(&changed_);
 }
@@ -327,7 +329,7 @@ void Station::repair(Charger& charger) {
 void Station::complete(const Vehicle& vehicle, Time now) {
     const auto timestamp = epochSeconds();
     const double minutes = vehicle.chargeHours * 60;
-    const double elapsed = std::chrono::duration<double>(now - vehicle.arrived).count() * config_.speed / 60;
+    const double elapsed = std::chrono::duration<double>(now - vehicle.arrived).count() * clockSpeed() / 60;
     const double cost = std::round((vehicle.delivered * energyRate + minutes * minuteRate) * 100) / 100;
     logLine(sessions_.get(), logError_, "%lld,%d,%s,%.6f,%.6f,%.6f,%d,completed\n", timestamp, vehicle.id,
         vehicle.plate.c_str(), vehicle.delivered, minutes, elapsed, vehicle.interruptions);
@@ -343,7 +345,7 @@ void Station::complete(const Vehicle& vehicle, Time now) {
 }
 
 void Station::shutdownRecord(const Vehicle& vehicle) {
-    const double elapsed = std::chrono::duration<double>(Clock::now() - vehicle.arrived).count() * config_.speed / 60;
+    const double elapsed = std::chrono::duration<double>(Clock::now() - vehicle.arrived).count() * clockSpeed() / 60;
     logLine(sessions_.get(), logError_, "%lld,%d,%s,%.6f,%.6f,%.6f,%d,aborted\n", epochSeconds(),
         vehicle.id, vehicle.plate.c_str(), vehicle.delivered, vehicle.chargeHours * 60, elapsed,
         vehicle.interruptions);
@@ -377,15 +379,71 @@ bool Station::isPeakHour() const {
 }
 
 int Station::enqueue(const std::string& plate, int soc, const std::string& service, double target) {
-    const int priority = service == "emergency" ? 0 : soc <= 20 ? 1
-        : service == "premium" || service == "fleet" ? 2 : service == "reserved" ? 3 : 4;
+    const bool medic = service == "medic" || service == "emergency";
+    const int priority = medic ? medicPriority : soc <= 20 ? lowBatteryPriority : normalPriority;
     const auto now = Clock::now();
     const int id = nextId_++;
-    queue_.push(std::make_shared<Vehicle>(Vehicle{
-        id, soc, priority, plate, target, 0, 0, 0, now, now
-    }));
+    queueVehicle(std::make_shared<Vehicle>(Vehicle{
+        id, soc, priority, plate, target, 0, 0, 0, now, now, now
+    }), now);
     event("arrival", plate + " queued · " + priorities[priority]);
     return id;
+}
+
+void Station::queueVehicle(const std::shared_ptr<Vehicle>& vehicle, Time now) {
+    vehicle->queuedSince = now;
+    if (demoActive_ && vehicle->priority == normalPriority)
+        nextPromotion_ = std::min(nextPromotion_, promotionAt(*vehicle));
+    queue_.push(vehicle);
+}
+
+Station::Time Station::promotionAt(const Vehicle& vehicle) const {
+    using SimMinutes = std::chrono::duration<double, std::ratio<60>>;
+    const auto threshold = std::chrono::duration_cast<Clock::duration>(
+        SimMinutes(config_.agingMinutes / clockSpeed()));
+    return vehicle.queuedSince + threshold - vehicle.queuedTime;
+}
+
+void Station::promoteWaiting(Time now) {
+    if (!demoActive_ || now < nextPromotion_) return;
+
+    // Update priorities outside the heap, then restore heap order. An admitted
+    // request may leave an earlier deadline, so always recompute the next one.
+    decltype(queue_) reordered;
+    nextPromotion_ = Time::max();
+    while (!queue_.empty()) {
+        auto vehicle = queue_.top();
+        queue_.pop();
+        if (vehicle->priority == normalPriority) {
+            const auto deadline = promotionAt(*vehicle);
+            if (deadline <= now) {
+                vehicle->priority = lowBatteryPriority;
+                vehicle->aged = true;
+                event("aging", vehicle->plate + " promoted to the low-battery group after waiting");
+            } else {
+                nextPromotion_ = std::min(nextPromotion_, deadline);
+            }
+        }
+        reordered.push(vehicle);
+    }
+    queue_.swap(reordered);
+}
+
+void Station::abortQueued() {
+    while (!queue_.empty()) {
+        shutdownRecord(*queue_.top());
+        queue_.pop();
+    }
+}
+
+double Station::clockSpeed() const { return demoActive_ ? demoSpeed : config_.speed; }
+
+void Station::finishDemoIfIdle() {
+    if (!demoActive_ || workers_ || !queue_.empty()) return;
+    demoActive_ = false;
+    demoStopping_ = false;
+    nextPromotion_ = Time::max();
+    event("station", "Demo ended. Manual clock restored.");
 }
 
 std::vector<std::shared_ptr<Station::Vehicle>> Station::queued() const {
@@ -407,7 +465,7 @@ std::vector<double> Station::waitEstimates(const std::vector<std::shared_ptr<Veh
     if (!slots) return std::vector<double>(queue.size(), -1);
 
     // Project completion events at the current cap. Each departure changes the
-    // remaining sessions' power share. Future arrivals and repairs are unknown.
+    // remaining sessions' power share. Use the current dispatch order.
     std::vector<double> remaining, estimates;
     for (const auto& charger : chargers_) {
         if (charger.vehicle && !charger.faulted) {
@@ -438,6 +496,7 @@ std::string Station::command(const std::string& input) {
 
     if (action == "status" && atEnd(args)) return snapshot();
     if (action == "add") {
+        if (demoActive_) return errorJson("Stop demo traffic before adding a manual request.");
         std::string plate, service;
         int soc;
         double target;
@@ -445,7 +504,7 @@ std::string Station::command(const std::string& input) {
             || !readNumber(args, target) || !atEnd(args) || !validPlate(plate)
             || soc < 0 || soc > 99 || !std::isfinite(target) || target < 0.1 || target > 100
             || (service != "normal" && service != "reserved" && service != "premium"
-                && service != "fleet" && service != "emergency")) {
+                && service != "fleet" && service != "emergency" && service != "medic")) {
             return errorJson("Use add PLATE SOC SERVICE KWH. SOC 0–99, energy 0.1–100 kWh.");
         }
         if (queue_.size() >= maxQueue) return errorJson("Waiting queue is full.");
@@ -497,16 +556,26 @@ std::string Station::command(const std::string& input) {
         return "{\"ok\":true}";
     }
     if (action == "demo" && atEnd(args)) {
-        if (workers_ || !queue_.empty()) return errorJson("Demo traffic requires an empty station.");
+        if (demoActive_ || workers_ || !queue_.empty()) return errorJson("Demo traffic requires an empty station.");
+        demoActive_ = true;
+        event("station", "Demo started at 10× with priority aging");
         enqueue("EV-1842", 48, "normal", 18);
-        enqueue("EV-3920", 55, "reserved", 14);
-        enqueue("FLEET-07", 42, "fleet", 21);
+        enqueue("EV-3920", 55, "normal", 14);
+        enqueue("EV-1407", 42, "normal", 21);
         enqueue("EV-2056", 35, "normal", 16);
-        enqueue("MEDIC-12", 44, "emergency", 17);
+        enqueue("MEDIC-12", 44, "medic", 17);
         enqueue("EV-0618", 9, "normal", 19);
-        enqueue("EV-0521", 15, "premium", 22);
-        enqueue("EV-7182", 52, "reserved", 13);
-        enqueue("EV-9354", 33, "normal", 15);
+        enqueue("EV-0521", 15, "normal", 22);
+        enqueue("EV-7182", 17, "normal", 13);
+        enqueue("EV-9354", 19, "normal", 15);
+        pthread_cond_broadcast(&changed_);
+        return "{\"ok\":true}";
+    }
+    if (action == "stop-demo" && atEnd(args)) {
+        if (!demoActive_) return errorJson("Demo traffic is idle.");
+        demoStopping_ = true;
+        abortQueued();
+        finishDemoIfIdle();
         pthread_cond_broadcast(&changed_);
         return "{\"ok\":true}";
     }
@@ -516,12 +585,16 @@ std::string Station::command(const std::string& input) {
 std::string Station::snapshot() {
     const auto now = Clock::now();
     updateEnergy(now);
+    promoteWaiting(now);
     std::ostringstream out;
     out << std::fixed << std::setprecision(6);
     const auto waiting = queued();
     const auto waits = waitEstimates(waiting);
     out << "{\"ok\":true,\"capacity\":" << config_.capacity << ",\"limit\":" << limit()
-        << ",\"power\":" << totalPower() << ",\"speed\":" << config_.speed
+        << ",\"power\":" << totalPower() << ",\"speed\":" << clockSpeed()
+        << ",\"demoActive\":" << (demoActive_ ? "true" : "false")
+        << ",\"demoStopping\":" << (demoStopping_ ? "true" : "false")
+        << ",\"agingMinutes\":" << config_.agingMinutes
         << ",\"peak\":" << (peak_ ? "true" : "false")
         << ",\"peakMode\":" << quoted(autoPeak_ ? "auto" : peak_ ? "on" : "off")
         << ",\"completed\":" << completed_ << ",\"energy\":" << completedEnergy_
@@ -533,7 +606,8 @@ std::string Station::snapshot() {
         out << "\"id\":" << v.id << ",\"plate\":" << quoted(v.plate) << ",\"soc\":" << v.soc
             << ",\"priority\":" << quoted(priorities[v.priority]) << ",\"rank\":" << v.priority
             << ",\"target\":" << v.target << ",\"delivered\":" << v.delivered
-            << ",\"interruptions\":" << v.interruptions;
+            << ",\"interruptions\":" << v.interruptions
+            << ",\"aged\":" << (v.aged ? "true" : "false");
     };
     out << ",\"chargers\":[";
     bool first = true;
@@ -556,6 +630,10 @@ std::string Station::snapshot() {
         if (i) out << ',';
         out << '{';
         writeVehicle(*waiting[i]);
+        if (demoActive_ && waiting[i]->priority == normalPriority) {
+            const double until = std::chrono::duration<double>(promotionAt(*waiting[i]) - now).count();
+            out << ",\"promotionIn\":" << until * clockSpeed() / 60;
+        }
         out << ",\"eta\":";
         if (waits[i] < 0) out << "null";
         else out << waits[i];
@@ -586,13 +664,15 @@ std::string Station::dashboard() {
     Lock lock(mutex_);
     const auto now = Clock::now();
     updateEnergy(now);
+    promoteWaiting(now);
     std::ostringstream out;
     out << std::fixed << std::setprecision(2);
     out << "VoltOS  |  EV charging station\n"
         << "Power " << totalPower() << " / " << limit() << " kW"
         << "  |  Peak " << (peak_ ? "on" : "off") << (autoPeak_ ? " (auto)" : "")
-        << "  |  Clock " << config_.speed << "x\n"
-        << "Completed " << completed_ << "  |  Billed energy " << completedEnergy_
+        << "  |  Clock " << clockSpeed() << "x";
+    if (demoActive_) out << "  |  Demo aging " << config_.agingMinutes << " sim min";
+    out << "\nCompleted " << completed_ << "  |  Billed energy " << completedEnergy_
         << " kWh  |  Revenue INR " << revenue_ << "  |  Faults " << faultCount_ << '\n';
     if (!logError_.empty()) out << "ALERT " << logError_ << '\n';
     out << "\nCHARGERS\n";
@@ -608,8 +688,10 @@ std::string Station::dashboard() {
     const auto waits = waitEstimates(waiting);
     out << "\nPRIORITY QUEUE  (" << waiting.size() << " waiting)\n";
     for (size_t i = 0; i < waiting.size(); ++i) {
-        out << "  " << i + 1 << ". " << waiting[i]->plate << "  " << priorities[waiting[i]->priority]
-            << "  SOC " << waiting[i]->soc << "%  |  ETA ";
+        const auto& vehicle = *waiting[i];
+        out << "  " << i + 1 << ". " << vehicle.plate << "  " << priorities[vehicle.priority];
+        if (vehicle.aged) out << " (aged up)";
+        out << "  SOC " << waiting[i]->soc << "%  |  ETA ";
         if (waits[i] < 0) out << "pending recovery";
         else out << waits[i] << " sim min";
         out << '\n';
