@@ -124,9 +124,6 @@ progress::-moz-progress-bar { background: #518366; }
 .events [data-type="recovery"] { color: #315d42; }
 .exports { padding: 14px 20px; border-top: 1px solid var(--line); display: flex; gap: 16px; flex-wrap: wrap; font-size: .9rem; }
 .exports a { text-underline-offset: 4px; }
-.concepts dl { margin: 0; padding: 7px 20px 20px; }
-.concepts dt { font-weight: 700; margin-top: 12px; }
-.concepts dd { margin: 3px 0 0; color: var(--muted); line-height: 1.55; }
 footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; border-top: 1px solid #d0d8cb; color: var(--muted); padding: 16px 0; margin-top: 27px; font: .76rem var(--mono); }
 
 dialog { width: min(92vw, 510px); max-height: 90vh; padding: 0; border: 1px solid #a4b4a7; background: var(--surface); color: var(--ink); }

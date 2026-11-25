@@ -158,27 +158,29 @@ def aging_checks(directory):
 
             command("cap 48")
             command("demo")
-            state = eventually(lambda: (s if len((s := status())["queue"]) == 5 else None))
-            original = [c["vehicle"]["plate"] for c in state["chargers"]]
-            assert state["demoActive"] and state["speed"] == 10 and state["agingMinutes"] == 1
-            assert original == ["MEDIC-12", "EV-0618", "EV-0521", "EV-7182"]
-            assert state["queue"][0]["plate"] == "EV-9354"
-            assert 0 < state["queue"][-1]["promotionIn"] <= 1
+            state = eventually(lambda: (s if len((s := status())["queue"]) == 2 else None))
+            original = [charger["vehicle"]["plate"] for charger in state["chargers"]]
+            assert state["demoActive"] and state["speed"] == 25 and state["agingMinutes"] == 1
+            assert original == ["CITY-BUS", "DELIVERY-VAN", "SCHOOL-SHUTTLE", "RIDE-SHARE"]
+            assert [vehicle["plate"] for vehicle in state["queue"]] == ["AMBULANCE-01", "TAXI-LOW"]
             command("add BLOCKED 50 normal 3", ok=False)
 
-            aged = eventually(lambda: (s if (s := status())["queue"][0]["aged"] else None), timeout=10)
-            assert [v["plate"] for v in aged["queue"]] == [
-                "EV-1842", "EV-3920", "EV-1407", "EV-2056", "EV-9354"]
-            assert aged["queue"][0]["rank"] == aged["queue"][-1]["rank"]
-            assert [c["vehicle"]["plate"] for c in aged["chargers"]] == original
-            assert sum(e["type"] == "aging" for e in aged["events"]) == 4
+            aged = eventually(lambda: (s if len((s := status())["queue"]) == 6 else None), timeout=25)
+            assert [vehicle["plate"] for vehicle in aged["queue"]] == [
+                "AMBULANCE-01", "AMBULANCE-02", "TAXI-LOW",
+                "COMMUTER-01", "FAMILY-EV", "COURIER-LOW"
+            ]
+            assert all(vehicle["rank"] == aged["queue"][2]["rank"] for vehicle in aged["queue"][2:])
+            assert [vehicle["aged"] for vehicle in aged["queue"]] == [False, False, False, True, True, False]
+            assert [charger["vehicle"]["plate"] for charger in aged["chargers"]] == original
+            assert sum(event["type"] == "aging" for event in aged["events"]) == 2
 
             command("stop-demo")
             stopped = eventually(lambda: (s if not (s := status())["demoActive"] else None))
             assert stopped["speed"] == 120 and not stopped["queue"]
             assert stopped["completed"] == 2
             assert all(c["vehicle"] is None for c in stopped["chargers"])
-            assert sum(row["status"] == "aborted" for row in rows(log / "sessions.csv")) == 9
+            assert sum(row["status"] == "aborted" for row in rows(log / "sessions.csv")) == 10
             command("add MANUAL-AGAIN 50 normal 1")
             command("quit")
             assert process.wait(timeout=3) == 0
@@ -186,7 +188,7 @@ def aging_checks(directory):
             if process.poll() is None:
                 process.stdin.close()
                 process.wait(timeout=4)
-    print("PASS · demo-only aging and 10× clock, non-preemption, stop and manual restore")
+    print("PASS · timed arrivals, medic FIFO, aging, non-preemption and manual restore")
 
 
 def http_checks(directory):
@@ -212,7 +214,7 @@ def http_checks(directory):
                 assert b"Station overview" in page.read()
             assert api({"action": "settings", "capacity": 30, "mode": "on"})["ok"]
             settings = api()
-            assert settings["limit"] == 18 and settings["speed"] == 10 and settings["agingMinutes"] == 30
+            assert settings["limit"] == 18 and settings["speed"] == 25 and settings["agingMinutes"] == 30
             with ThreadPoolExecutor(max_workers=6) as pool:
                 actions = ({"action": "add", "plate": f"EV-{i}", "soc": 40,
                             "service": "normal", "kwh": 1} for i in range(12))

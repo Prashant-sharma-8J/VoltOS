@@ -11,15 +11,17 @@
 #include <pthread.h>
 #include <semaphore.h>
 
+using namespace std;
+
 class Station {
 public:
     struct Config {
         int chargers = 4;
         double capacity = 48;
-        double speed = 10;
+        double speed = 25;
         double agingMinutes = 30;
         bool autoPeak = false;
-        std::filesystem::path logRoot = "logs";
+        filesystem::path logRoot = "logs";
     };
 
     explicit Station(Config config);
@@ -28,17 +30,17 @@ public:
     Station& operator=(const Station&) = delete;
 
     // Commands return a single JSON document for the pipe or terminal client.
-    std::string command(const std::string& input);
-    std::string dashboard();
-    const std::filesystem::path& logDirectory() const { return logDirectory_; }
+    string command(const string& input);
+    string dashboard();
+    const filesystem::path& logDirectory() const { return logDirectory_; }
 
 private:
-    using Clock = std::chrono::steady_clock;
+    using Clock = chrono::steady_clock;
     using Time = Clock::time_point;
 
     struct Vehicle {
         int id, soc, priority;
-        std::string plate;
+        string plate;
         double target;
         double delivered = 0;
         double chargeHours = 0;
@@ -46,36 +48,37 @@ private:
         Time arrived, updated, queuedSince;
         Clock::duration queuedTime{};
         bool aged = false;
+        Time prioritySince{};
     };
 
     struct Charger {
         Station* station;
         int id;
-        std::shared_ptr<Vehicle> vehicle;
+        shared_ptr<Vehicle> vehicle;
         double kw = 0;
         bool faulted = false;
         Time repairAt{};
     };
 
     struct ByPriority {
-        bool operator()(const std::shared_ptr<Vehicle>& a,
-                        const std::shared_ptr<Vehicle>& b) const;
+        bool operator()(const shared_ptr<Vehicle>& a,
+                        const shared_ptr<Vehicle>& b) const;
     };
 
     struct Event {
         long long time;
-        std::string type, message;
+        string type, message;
     };
 
     struct Receipt {
         int id;
-        std::string plate;
+        string plate;
         double kwh, minutes, cost;
         int interruptions;
     };
 
-    struct FileCloser { void operator()(FILE* file) const { if (file) std::fclose(file); } };
-    using Log = std::unique_ptr<FILE, FileCloser>;
+    struct FileCloser { void operator()(FILE* file) const { if (file) fclose(file); } };
+    using Log = unique_ptr<FILE, FileCloser>;
 
     static void* schedulerEntry(void*);
     static void* workerEntry(void*);
@@ -84,9 +87,10 @@ private:
     bool dispatch(Time now);
     void updateEnergy(Time now);
     void updateEnergy(Charger&, Time now);
-    void queueVehicle(const std::shared_ptr<Vehicle>&, Time now);
+    void queueVehicle(const shared_ptr<Vehicle>&, Time now);
     Time promotionAt(const Vehicle&) const;
     void promoteWaiting(Time now);
+    void releaseDemoArrivals(Time now);
     void abortQueued();
     void finishDemoIfIdle();
     double clockSpeed() const;
@@ -95,15 +99,15 @@ private:
     void repair(Charger&);
     void complete(const Vehicle&, Time now);
     void shutdownRecord(const Vehicle&);
-    void event(const std::string& type, const std::string& message);
+    void event(const string& type, const string& message);
     double limit() const;
     double totalPower() const;
     void checkInvariant() const;
     bool isPeakHour() const;
-    int enqueue(const std::string& plate, int soc, const std::string& service, double target);
-    std::vector<std::shared_ptr<Vehicle>> queued() const;
-    std::vector<double> waitEstimates(const std::vector<std::shared_ptr<Vehicle>>& queue) const;
-    std::string snapshot();
+    int enqueue(const string& plate, int soc, const string& service, double target);
+    vector<shared_ptr<Vehicle>> queued() const;
+    vector<double> waitEstimates(const vector<shared_ptr<Vehicle>>& queue) const;
+    string snapshot();
     void pause(unsigned milliseconds);
 
     Config config_;
@@ -111,18 +115,20 @@ private:
     pthread_cond_t changed_{};
     pthread_t scheduler_{};
     sem_t* slots_ = SEM_FAILED;
-    std::vector<Charger> chargers_;
-    std::priority_queue<std::shared_ptr<Vehicle>,
-        std::vector<std::shared_ptr<Vehicle>>, ByPriority> queue_;
+    vector<Charger> chargers_;
+    priority_queue<shared_ptr<Vehicle>,
+        vector<shared_ptr<Vehicle>>, ByPriority> queue_;
     Time nextPromotion_ = Time::max();
-    std::deque<Event> events_;
-    std::deque<Receipt> receipts_;
-    std::filesystem::path logDirectory_;
+    deque<Event> events_;
+    deque<Receipt> receipts_;
+    filesystem::path logDirectory_;
     Log sessions_, faults_, transactions_;
-    std::string logError_;
+    string logError_;
     Time started_ = Clock::now();
     bool stopping_ = false, peak_ = false, autoPeak_ = false;
     bool demoActive_ = false, demoStopping_ = false;
+    Time demoStarted_{};
+    size_t nextDemoArrival_ = 0;
     int nextId_ = 1, workers_ = 0, completed_ = 0, faultCount_ = 0;
     double completedEnergy_ = 0, revenue_ = 0, totalElapsedMinutes_ = 0;
 };

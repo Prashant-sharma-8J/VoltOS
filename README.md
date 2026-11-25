@@ -36,7 +36,7 @@ Type `demo`, then `watch 10` to see the station update for ten seconds. Use `sta
 make web
 ```
 
-Open **http://127.0.0.1:8000**. Use **Add vehicle** to enter your own requests. When the station is empty, **Load demo traffic** starts a separate batch of nine vehicles at 10× with priority aging. Use **Stop demo** to return to manual traffic before the batch finishes. The **Sessions** view has receipts and CSV downloads. The **OS Concepts** tab explains the primitives behind the simulator.
+Open **http://127.0.0.1:8000**. Use **Add vehicle** to enter your own requests. When the station is empty, **Load demo traffic** starts timed arrivals for ten vehicles at 25× with priority aging. Use **Stop demo** to return to manual traffic before the batch finishes. The **Sessions** view has receipts and CSV downloads.
 
 Each launch creates its own station instance and log directory. The browser gateway binds to loopback and launches the same native engine used by the terminal. It uses Python’s standard library and local HTML, CSS, and JavaScript. There is no package installation or internet connection at runtime.
 
@@ -51,7 +51,7 @@ make web ARGS="--chargers 3 --capacity 36 --speed 1 --port 8080 --demo"
 | --- | --- | --- |
 | `--chargers` | 4 | 1–16. Each charger is capped at 22 kW. |
 | `--capacity` | 48 kW | 5–500 kW. Peak throttling uses 60% of this value. |
-| `--speed` | 10 | Manual clock in simulated seconds per real second (1–600). The demo runs at 10×. |
+| `--speed` | 25 | Manual clock in simulated seconds per real second (1–600). The demo runs at 25×. |
 | `--aging-minutes` | 30 | 1–240 simulated minutes of demo queue time before a Normal request joins the low-battery group. |
 | `--auto-peak` | Off | Enables throttling from 18:00 through 21:59 in the station computer’s local time. |
 | `--logs` | `logs/` | Parent directory for per-run CSV logs. |
@@ -60,11 +60,11 @@ make web ARGS="--chargers 3 --capacity 36 --speed 1 --port 8080 --demo"
 
 ## Lab demonstration
 
-1. Start at the default settings and load demo traffic. Medic and low-battery requests occupy the earliest slots. Each class uses first-in, first-out order.
+1. Start at the default settings and load demo traffic. Four vehicles begin charging. Watch two medics reach the front in arrival order while later vehicles wait.
 2. Open **Power settings** and turn peak mode on. Four active sessions at a 48 kW base capacity go from 12 kW each to 7.2 kW each.
 3. Select **Test fault** on an active charger. Observe its power fall to zero, the request rejoin the priority queue with energy intact, and the remaining power get redistributed. Recovery takes 12 real seconds. A recovered request resumes in priority order when a healthy slot has enough power.
 4. In a manual run, add a new medic vehicle while all slots are busy. It moves ahead of lower-priority waiting requests. Active sessions continue under non-preemptive scheduling.
-5. Watch an earlier Normal request age up and move ahead of a later low-battery arrival. For a quick check, start a separate run with `make web ARGS="--aging-minutes 1 --port 8003"` and keep all chargers occupied. The promotion is also recorded in **Activity**.
+5. Watch a Normal request age into the low-battery group behind those already waiting and ahead of later low-battery arrivals. For a quick check, start a separate run with `make web ARGS="--aging-minutes 1 --port 8003"` and keep all chargers occupied. The promotion is also recorded in **Activity**.
 6. After completion, open **Sessions**. Confirm the receipt totals and compare the fault and transaction logs with the dashboard. Use `--speed 1` for a real-time manual run.
 
 ## How the operating-system concepts appear in the code
@@ -74,7 +74,7 @@ make web ARGS="--chargers 3 --capacity 36 --speed 1 --port 8080 --demo"
 | POSIX multithreading | `Station::schedule` runs in one dispatcher pthread. `Station::charge` runs in a separate pthread for each active charger assignment. |
 | Counting semaphore | A POSIX `sem_t` counts healthy, idle chargers. The dispatcher reserves a token using `sem_trywait`. Completion or repair returns an available token using `sem_post`. An idle fault removes one token. |
 | Mutex and condition variable | A `pthread_mutex_t` serializes changes to the queue, charger array, energy totals, and logs. A `pthread_cond_t` wakes the dispatcher and workers when station state changes. |
-| Priority scheduling | `std::priority_queue` orders Medic > Low battery (SOC ≤20%) or aged Normal > Normal. The queue uses original arrival order inside each group. During the demo, the dispatcher promotes Normal requests when their accumulated queue time reaches the threshold. Active sessions continue. |
+| Priority scheduling | `std::priority_queue` orders Medic > Low battery (SOC ≤20%) or aged Normal > Normal. Medics and Normal requests use arrival order. The middle group uses the time each request entered that group. During the demo, the dispatcher promotes Normal requests when their accumulated queue time reaches the threshold. Active sessions continue. |
 | Producer–consumer | The console or web gateway produces vehicle arrivals. The dispatcher consumes queued requests as healthy chargers and power become available. |
 | Arrays and file handling | A fixed-size `std::vector` holds the charger roster. The engine writes persistent CSV records with standard C `fopen`, `fprintf`, and `fflush`. |
 | Dynamic resource management | The budget is divided among healthy active chargers, with a per-charger ceiling of 22 kW. New assignments require at least 3 kW per active slot. A lower cap can throttle existing assignments below 3 kW. Power is integrated at the old rate before a change. |

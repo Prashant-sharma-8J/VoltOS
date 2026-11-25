@@ -8,7 +8,7 @@ const safe = (value) => String(value).replace(/[&<>"']/g, (character) => (
 const empty = (columns, message) => `<tr><td colspan="${columns}" class="empty-cell">${message}</td></tr>`;
 const money = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" });
 const time = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-const views = { overview: "Station overview", sessions: "Session history", activity: "Station activity", concepts: "OS Concepts" };
+const views = { overview: "Station overview", sessions: "Session history", activity: "Station activity" };
 const ui = { snapshot: null, history: [], timer: null, actionsInFlight: 0, statusRevision: 0 };
 
 function route() {
@@ -63,7 +63,7 @@ function renderDemoButton() {
   demo.textContent = running ? "Stop demo" : "Load demo traffic";
   demo.disabled = !data || data.demoStopping || (!running && occupied) || ui.actionsInFlight > 0;
   demo.title = running ? "End demo traffic and restore the manual clock."
-    : occupied ? "Demo traffic can be loaded when the station is empty." : "Queue nine example vehicles at 10×.";
+    : occupied ? "Demo traffic can be loaded when the station is empty." : "Start timed arrivals for ten example vehicles.";
   byId("open-arrival").disabled = running;
 }
 
@@ -86,9 +86,6 @@ function render(data) {
   byId("queue-policy").textContent = data.demoActive
     ? `Demo requests age up after ${threshold} simulated minutes. Wait estimates use the current queue order.`
     : "Medic first, then low battery (20% or below), then Normal. Each group uses arrival order.";
-  if (Number.isFinite(threshold)) {
-    byId("aging-explanation").textContent = `During the 10× demo, Normal requests join the low-battery group after ${threshold} simulated minutes in the queue. Waiting time carries over after interruptions.`;
-  }
   renderDemoButton();
 
   const rows = byId("charger-rows");
@@ -272,7 +269,7 @@ document.querySelectorAll("[data-close]").forEach((button) => {
 byId("demo").addEventListener("click", (event) => {
   const stopping = ui.snapshot?.demoActive;
   action({ action: stopping ? "stop-demo" : "demo" },
-    stopping ? "Returning to manual traffic." : "Demo traffic started at 10× with priority aging.", event.currentTarget);
+    stopping ? "Returning to manual traffic." : "Timed demo traffic started with priority aging.", event.currentTarget);
 });
 byId("charger-rows").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-charger]");
